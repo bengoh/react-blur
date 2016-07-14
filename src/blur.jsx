@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
 import PureRenderMixin from 'react-addons-pure-render-mixin';
-const stackBlurImage = require('../lib/StackBlur.js');
+const { stackBlurImage, stackBlurCanvasRGB } = require('../lib/StackBlur.js');
 
 // ref http://stackoverflow.com/q/470832
 function getAbsolutePath(path) {
@@ -10,9 +10,57 @@ function getAbsolutePath(path) {
   return a.href;
 }
 
+function eitherImgOrImgData(props, propName) {
+  const validImgProp = props.img && props.img.constructor.name === 'String';
+  const validImgDataProp = props.imgData && props.imgData.constructor.name === 'ImageData';
+
+  if (!validImgProp && !validImgDataProp) {
+    return new Error('Provide either an img (string) or imgData (ImageData type) property.');
+  } else if (validImgProp && validImgDataProp) {
+    return new Error('Provide only one of img or imgData, not both.')
+  }
+}
+
+function transferImageData(imageData, targetCanvas) {
+  // first, create a virtual canvas with the same dimensions as the imageData
+  // and paint it.
+  const offscreen = document.createElement('canvas');
+  const context = offscreen.getContext('2d');
+
+  const naturalWidth = offscreen.width = imageData.width;
+  const naturalHeight = offscreen.height = imageData.height;
+
+  // we obtain the current "canvas" dimensions of the target canvas
+  const width = targetCanvas.width;
+  const height = targetCanvas.height;
+
+  // we draw the imageData onto the canvas directly first
+  context.putImageData(imageData, 0, 0);
+
+  // we then compute the new dimensions we want to achieve
+  const squeezeFactor = naturalWidth / width;
+  const flattenFactor = naturalHeight / height;
+  const moreSqueezedThanFlattened = squeezeFactor > flattenFactor;
+  const ratio = moreSqueezedThanFlattened ? flattenFactor : squeezeFactor;
+  const finalWidth = naturalWidth / ratio;
+  const finalHeight = naturalHeight / ratio;
+
+  const left = Math.floor((finalWidth - width) / -2);
+  const top = Math.floor((finalHeight - height) / -2);
+  const intWidth = Math.ceil(finalWidth);
+  const intHeight = Math.ceil(finalHeight);
+
+  // we then draw onto the target canvas itself by using the offscreen canvas
+  // as an image source
+  const targetContext = targetCanvas.getContext('2d');
+  targetContext.clearRect(0, 0, width, height);
+  targetContext.drawImage(offscreen, left, top, intWidth, intHeight);
+}
+
 export default class ReactBlur extends React.Component {
   static propTypes = {
-    img           : React.PropTypes.string.isRequired,
+    img           : eitherImgOrImgData,
+    imgData       : eitherImgOrImgData,
     blurRadius    : React.PropTypes.number,
     resizeInterval: React.PropTypes.number,
     className     : React.PropTypes.string,
@@ -50,24 +98,38 @@ export default class ReactBlur extends React.Component {
   }
 
   componentWillUpdate(nextProps, nextState) {
-    // detect changes in state and inform componentWillUpdate to perform
+    // detect canvas related changes in state and inform componentWillUpdate to perform
     // canvas rerendering if needed
-    const fields = ['imgSrc', 'blurRadius', 'width', 'height'];
-    this.hasDirty = !this.state || fields.some(field => this.state[field] !== nextState[field]);
+    const fields = ['imgSrc', 'imgData', 'blurRadius', 'width', 'height'];
+    const isStateInitialization = !this.state;
+
+    this.hasDirty = isStateInitialization || fields.some(field => this.state[field] !== nextState[field]);
+    this.imageChanged = isStateInitialization || ['imgSrc', 'imgData'].some(imgField => this.state[imgField] !== nextState[imgField]);
   }
 
   componentDidUpdate() {
     if (this.hasDirty) {
       this.hasDirty = false;
-      this.loadImage(this.state.imgSrc).then((event) => {
-        if (event) {
+
+      const isImgData = this.state.imgData;
+      const loadImagePromise = isImgData ? Promise.resolve() : this.loadImage(this.state.imgSrc);
+
+      loadImagePromise.then((event) => {
+        if (this.imageChanged) {
           this.props.onLoadFunction(event);
         }
 
         const canvas = ReactDOM.findDOMNode(this.refs.canvas);
         canvas.height = this.state.height;
         canvas.width = this.state.width;
-        stackBlurImage(this.img, canvas, this.state.blurRadius, this.state.width, this.state.height);
+
+        if (isImgData) {
+          transferImageData(this.state.imgData, canvas);
+          stackBlurCanvasRGB(canvas, 0, 0, this.state.width, this.state.height, this.state.blurRadius);
+        } else {
+          stackBlurImage(this.img, canvas, this.state.blurRadius, this.state.width, this.state.height);
+        }
+
       });
     }
   }
@@ -123,7 +185,8 @@ export default class ReactBlur extends React.Component {
   syncProps(props) {
     this.setState({
       blurRadius: props.blurRadius,
-      imgSrc: getAbsolutePath(props.img)
+      imgSrc: props.imgData ? null : getAbsolutePath(props.img),
+      imgData: props.imgData
     });
   }
 

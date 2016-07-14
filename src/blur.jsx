@@ -3,6 +3,13 @@ import ReactDOM from 'react-dom';
 import PureRenderMixin from 'react-addons-pure-render-mixin';
 const stackBlurImage = require('../lib/StackBlur.js');
 
+// ref http://stackoverflow.com/q/470832
+function getAbsolutePath(path) {
+  const a = document.createElement('a');
+  a.href = path;
+  return a.href;
+}
+
 export default class ReactBlur extends React.Component {
   static propTypes = {
     img           : React.PropTypes.string.isRequired,
@@ -26,101 +33,102 @@ export default class ReactBlur extends React.Component {
   }
 
   componentDidMount() {
-    this.loadImage(this.props);
-
     window.addEventListener('resize', this.resize.bind(this));
+
+    // initialize state
+    this.syncProps(this.props);
+    this.syncDimensions();
   }
 
   componentWillUnmount() {
+    this._unmounted = true;
     window.removeEventListener('resize', this.resize.bind(this));
   }
 
+  componentWillReceiveProps(nextProps) {
+    this.syncProps(nextProps);
+  }
+
+  componentWillUpdate(nextProps, nextState) {
+    // detect changes in state and inform componentWillUpdate to perform
+    // canvas rerendering if needed
+    const fields = ['imgSrc', 'blurRadius', 'width', 'height'];
+    this.hasDirty = !this.state || fields.some(field => this.state[field] !== nextState[field]);
+  }
+
   componentDidUpdate() {
-    if (!this.img) {
-      this.loadImage(this.props);
-    } else if (!this.isCurrentImgSrc(this.props.img)) {
-      this.img.src = this.props.img;
-      this.setDimensions();
-    } else {
-      // if some other prop changed reblur
-      stackBlurImage(this.img, this.canvas, this.getCurrentBlur(), this.width, this.height);
+    if (this.hasDirty) {
+      this.hasDirty = false;
+      this.loadImage(this.state.imgSrc).then((event) => {
+        if (event) {
+          this.props.onLoadFunction(event);
+        }
+
+        const canvas = ReactDOM.findDOMNode(this.refs.canvas);
+        canvas.height = this.state.height;
+        canvas.width = this.state.width;
+        stackBlurImage(this.img, canvas, this.state.blurRadius, this.state.width, this.state.height);
+      });
     }
   }
 
-  isCurrentImgSrc(newSrc) {
-    // Handle relative paths
-    if (this.img) {
-      const newImg = new Image();
-      newImg.src   = newSrc;
+  loadImage(src) {
+    return new Promise((resolve, reject) => {
+      if (this.img && this.img.src === src) {
+        return resolve(); // no event, no change in image
+      } else if (!this.img) {
+        this.img           = new Image();
+      }
 
-      // if absolute SRC is the same
-      return newImg.src === this.img.src;
-    }
-
-    return false;
-  }
-
-  getCurrentBlur() {
-    return this.props.blurRadius;
-  }
-
-  loadImage(props) {
-    if (this.isCurrentImgSrc(props.img)) {
-      stackBlurImage(this.img, this.canvas, props.blurRadius, this.width, this.height);
-      return;
-    }
-
-    this.img             = new Image();
-    this.img.crossOrigin = 'Anonymous';
-    this.img.onload      = (event) => {
-      stackBlurImage(this.img, this.canvas, this.getCurrentBlur(), this.width, this.height);
-      props.onLoadFunction(event);
-    };
-    this.img.onerror     = (event) => {
-      this.img.src = '';
-      props.onLoadFunction(event);
-    };
-    this.img.src         = props.img;
-
-    this.setDimensions();
+      this.img.crossOrigin = 'Anonymous';
+      this.img.src         = src;
+      this.img.onload      = (event) => {
+        resolve(event);
+      };
+      this.img.onerror     = (event) => {
+        this.img.src = '';
+        resolve(event);
+      };
+    });
   }
 
   resize() {
     const now        = new Date().getTime();
-    let deferTimer;
-    const threshhold = this.props.resizeInterval;
+    const threshold = this.props.resizeInterval;
 
-    if (this.last && now < this.last + threshhold) {
-      clearTimeout(deferTimer);
-      deferTimer = setTimeout(() => {
+    if (this.last && now < this.last + threshold) {
+      clearTimeout(this.deferTimer);
+      this.deferTimer = setTimeout(() => {
         this.last = now;
-        this.doResize();
-      }, threshhold);
+        this.syncDimensions();
+      }, threshold);
     } else {
       this.last = now;
-      this.doResize();
+      this.syncDimensions();
     }
   }
 
-  setDimensions() {
+  syncDimensions() {
+    if (this._unmounted) {
+      return;
+    }
+
     const container = ReactDOM.findDOMNode(this);
-
-    this.height = container.offsetHeight;
-    this.width = container.offsetWidth;
-
-    this.canvas        = ReactDOM.findDOMNode(this.refs.canvas);
-    this.canvas.height = this.height;
-    this.canvas.width  = this.width;
+    this.setState({
+      height: container.offsetHeight,
+      width: container.offsetWidth
+    });
   }
 
-  doResize() {
-    this.setDimensions();
-
-    stackBlurImage(this.img, this.canvas, this.getCurrentBlur(), this.width, this.height);
+  syncProps(props) {
+    this.setState({
+      blurRadius: props.blurRadius,
+      imgSrc: getAbsolutePath(props.img)
+    });
   }
 
   render() {
-    var { className, children, ...other } = this.props;
+    var { className, children, canvasStyle, ...other } = this.props;
     var classes = 'react-blur';
 
     if (className) {
@@ -128,8 +136,8 @@ export default class ReactBlur extends React.Component {
     }
 
     return (
-      <div {...other} className={classes} onClick={this.clickTest}>
-        <canvas className='react-blur-canvas' ref='canvas' />
+      <div {...other} className={classes}>
+        <canvas className='react-blur-canvas' style={canvasStyle} ref='canvas' />
         {children}
       </div>
     );

@@ -10,14 +10,15 @@ function getAbsolutePath(path) {
   return a.href;
 }
 
-function eitherImgOrImgData(props, propName) {
-  const validImgProp = props.img && props.img.constructor.name === 'String';
-  const validImgDataProp = props.imgData && props.imgData.constructor.name === 'ImageData';
+function isImageData(image) {
+  return image && image.constructor.name === 'ImageData';
+}
 
-  if (!validImgProp && !validImgDataProp) {
-    return new Error('Provide either an img (string) or imgData (ImageData type) property.');
-  } else if (validImgProp && validImgDataProp) {
-    return new Error('Provide only one of img or imgData, not both.')
+function isStringOrImageData(props, propName) {
+  const isValid = props.img && (['String', 'ImageData'].includes(props.img.constructor.name));
+
+  if (!isValid) {
+    return new Error('img must be either a String (url) or an ImageData type.');
   }
 }
 
@@ -59,8 +60,7 @@ function transferImageData(imageData, targetCanvas) {
 
 export default class ReactBlur extends React.Component {
   static propTypes = {
-    img           : eitherImgOrImgData,
-    imgData       : eitherImgOrImgData,
+    img           : isStringOrImageData,
     blurRadius    : React.PropTypes.number,
     resizeInterval: React.PropTypes.number,
     className     : React.PropTypes.string,
@@ -100,19 +100,19 @@ export default class ReactBlur extends React.Component {
   componentWillUpdate(nextProps, nextState) {
     // detect canvas related changes in state and inform componentWillUpdate to perform
     // canvas rerendering if needed
-    const fields = ['imgSrc', 'imgData', 'blurRadius', 'width', 'height'];
+    const fields = ['img', 'blurRadius', 'width', 'height'];
     const isStateInitialization = !this.state;
 
     this.hasDirty = isStateInitialization || fields.some(field => this.state[field] !== nextState[field]);
-    this.imageChanged = isStateInitialization || ['imgSrc', 'imgData'].some(imgField => this.state[imgField] !== nextState[imgField]);
+    this.imageChanged = isStateInitialization || this.state.img !== nextState.img;
   }
 
   componentDidUpdate() {
     if (this.hasDirty) {
       this.hasDirty = false;
 
-      const isImgData = this.state.imgData;
-      const loadImagePromise = isImgData ? Promise.resolve() : this.loadImage(this.state.imgSrc);
+      const usingImageData = isImageData(this.state.img);
+      const loadImagePromise = usingImageData ? Promise.resolve() : this.loadImage(this.state.img);
 
       loadImagePromise.then((event) => {
         if (this.imageChanged) {
@@ -123,8 +123,8 @@ export default class ReactBlur extends React.Component {
         canvas.height = this.state.height;
         canvas.width = this.state.width;
 
-        if (isImgData) {
-          transferImageData(this.state.imgData, canvas);
+        if (usingImageData) {
+          transferImageData(this.state.img, canvas);
           stackBlurCanvasRGB(canvas, 0, 0, this.state.width, this.state.height, this.state.blurRadius);
         } else {
           stackBlurImage(this.img, canvas, this.state.blurRadius, this.state.width, this.state.height);
@@ -185,8 +185,7 @@ export default class ReactBlur extends React.Component {
   syncProps(props) {
     this.setState({
       blurRadius: props.blurRadius,
-      imgSrc: props.imgData ? null : getAbsolutePath(props.img),
-      imgData: props.imgData
+      img: isImageData(props.img) ? props.img : getAbsolutePath(props.img)
     });
   }
 
